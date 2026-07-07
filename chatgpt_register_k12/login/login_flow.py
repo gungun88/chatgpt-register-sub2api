@@ -25,20 +25,21 @@ from __future__ import annotations
 import logging
 import re
 import secrets
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from html import unescape
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
-from chatgpt_register_sub2api.register.headers import json_headers, navigate_headers
-from chatgpt_register_sub2api.register.mail_provider import wait_for_code
-from chatgpt_register_sub2api.register.session import (
+from chatgpt_register_k12.register.headers import json_headers, navigate_headers
+from chatgpt_register_k12.register.mail_provider import wait_for_code
+from chatgpt_register_k12.register.session import (
     create_register_session,
     request_with_retry,
 )
-from chatgpt_register_sub2api.utils.pkce import generate_pkce
-from chatgpt_register_sub2api.utils.sentinel import build_sentinel_token
+from chatgpt_register_k12.utils.pkce import generate_pkce
+from chatgpt_register_k12.utils.sentinel import build_sentinel_token
 
 # ── Constants ───────────────────────────────────────────────────────
 
@@ -61,6 +62,32 @@ logger = logging.getLogger(__name__)
 
 class LoginError(RuntimeError):
     """Login flow failed."""
+
+
+class PasswordRequiredError(LoginError):
+    """The auth session requires password login; OTP-only login is unavailable."""
+
+
+_login_otp_lock_guard = threading.Lock()
+_login_otp_locks: dict[str, threading.Lock] = {}
+
+
+def _login_otp_lock_key(email: str) -> str:
+    address = str(email or "").strip().lower()
+    if "@" not in address:
+        return address
+    local, domain = address.rsplit("@", 1)
+    return f"{local.split('+', 1)[0]}@{domain}"
+
+
+def _login_otp_lock_for(email: str) -> threading.Lock:
+    key = _login_otp_lock_key(email)
+    with _login_otp_lock_guard:
+        lock = _login_otp_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _login_otp_locks[key] = lock
+        return lock
 
 
 def _response_json(resp) -> dict:
@@ -219,6 +246,8 @@ def _page_type_from_response_url(resp) -> str:
         return "login_password"
     if path.endswith("/email-verification"):
         return "email_otp_verification"
+    if path.endswith("/error"):
+        return "error"
     if path.endswith("/workspace"):
         return "workspace"
     if path.endswith("/about-you"):
@@ -408,6 +437,55 @@ def _complete_about_you(
 # ── Re-login with workspace selection ───────────────────────────────
 
 
+def _start_login_authorize(
+    session,
+    device_id: str,
+    email: str,
+) -> tuple[dict[str, Any], str]:
+    logger.info(f"[{email}] Team login: authorizing")
+    code_verifier, code_challenge = generate_pkce()
+
+    session.cookies.set("oai-did", device_id, domain=".auth.openai.com")
+    session.cookies.set("oai-did", device_id, domain="auth.openai.com")
+
+    params = {
+        "issuer": AUTH_BASE,
+        "client_id": PLATFORM_OAUTH_CLIENT_ID,
+        "audience": PLATFORM_OAUTH_AUDIENCE,
+        "redirect_uri": PLATFORM_OAUTH_REDIRECT_URI,
+        "device_id": device_id,
+        "screen_hint": "login",
+        "max_age": "0",
+        "login_hint": email,
+        "scope": "openid profile email offline_access",
+        "response_type": "code",
+        "response_mode": "query",
+        "state": secrets.token_urlsafe(32),
+        "nonce": secrets.token_urlsafe(32),
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "auth0Client": PLATFORM_AUTH0_CLIENT,
+    }
+    auth_url = f"{AUTH_BASE}/api/accounts/authorize?{urlencode(params)}"
+    headers = navigate_headers(f"{PLATFORM_BASE}/")
+
+    resp, error = request_with_retry(
+        session,
+        "get",
+        auth_url,
+        headers=headers,
+        allow_redirects=True,
+        verify=True,
+    )
+    if resp is None or resp.status_code != 200:
+        raise LoginError(
+            f"Login authorize failed: HTTP "
+            f"{getattr(resp, 'status_code', '?')}, {error or ''}"
+        )
+    logger.info(f"[{email}] Team login: authorize HTTP {resp.status_code}")
+    return _data_with_response_hints(resp), code_verifier
+
+
 def re_login_for_team_token(
     email: str,
     password: str,
@@ -442,43 +520,7 @@ def re_login_for_team_token(
 
     try:
         # Step 1: Authorize as login
-        logger.info(f"[{email}] Team login: authorizing")
-        code_verifier, code_challenge = generate_pkce()
-
-        session.cookies.set("oai-did", device_id, domain=".auth.openai.com")
-        session.cookies.set("oai-did", device_id, domain="auth.openai.com")
-
-        params = {
-            "issuer": AUTH_BASE,
-            "client_id": PLATFORM_OAUTH_CLIENT_ID,
-            "audience": PLATFORM_OAUTH_AUDIENCE,
-            "redirect_uri": PLATFORM_OAUTH_REDIRECT_URI,
-            "device_id": device_id,
-            "screen_hint": "login",
-            "max_age": "0",
-            "login_hint": email,
-            "scope": "openid profile email offline_access",
-            "response_type": "code",
-            "response_mode": "query",
-            "state": secrets.token_urlsafe(32),
-            "nonce": secrets.token_urlsafe(32),
-            "code_challenge": code_challenge,
-            "code_challenge_method": "S256",
-            "auth0Client": PLATFORM_AUTH0_CLIENT,
-        }
-        auth_url = f"{AUTH_BASE}/api/accounts/authorize?{urlencode(params)}"
-        headers = navigate_headers(f"{PLATFORM_BASE}/")
-
-        resp, error = request_with_retry(
-            session, "get", auth_url, headers=headers,
-            allow_redirects=True, verify=True,
-        )
-        if resp is None or resp.status_code != 200:
-            raise LoginError(
-                f"Login authorize failed: HTTP "
-                f"{getattr(resp, 'status_code', '?')}, {error or ''}"
-            )
-        logger.info(f"[{email}] Team login: authorize HTTP {resp.status_code}")
+        _, code_verifier = _start_login_authorize(session, device_id, email)
 
         # Step 2: Verify password against the current auth session.
         logger.info(f"[{email}] Team login: verifying password")
@@ -528,6 +570,97 @@ def re_login_for_team_token(
         session.close()
 
 
+def re_login_email_otp_for_team_token(
+    email: str,
+    mail_config: dict,
+    proxy: str = "",
+    flaresolverr_url: str = "",
+    workspace_id: str = "",
+) -> dict:
+    lock = _login_otp_lock_for(email)
+    with lock:
+        return _re_login_email_otp_for_team_token_unlocked(
+            email=email,
+            mail_config=mail_config,
+            proxy=proxy,
+            flaresolverr_url=flaresolverr_url,
+            workspace_id=workspace_id,
+        )
+
+
+def _re_login_email_otp_for_team_token_unlocked(
+    email: str,
+    mail_config: dict,
+    proxy: str = "",
+    flaresolverr_url: str = "",
+    workspace_id: str = "",
+) -> dict:
+    """Re-login using only email OTP when the auth session allows it."""
+    session = create_register_session(
+        proxy=proxy, flaresolverr_url=flaresolverr_url
+    )
+    device_id = str(uuid.uuid4())
+
+    try:
+        data, code_verifier = _start_login_authorize(session, device_id, email)
+        page_type = _page_type_from_data(data)
+        code = _extract_code_from_data(data)
+        if not code:
+            if page_type in {"login_password", "password", ""}:
+                logger.info(f"[{email}] Team login: trying email OTP login")
+                try:
+                    otp_not_before = datetime.now(timezone.utc) - timedelta(seconds=5)
+                    _send_login_otp(session)
+                    data = {
+                        "page": {"type": "email_otp_verification"},
+                        "_otp_already_sent": True,
+                        "_otp_not_before": otp_not_before,
+                    }
+                except Exception as error:
+                    raise PasswordRequiredError(
+                        "OTP-only login is unavailable; password is required"
+                    ) from error
+            elif page_type == "email_otp_send":
+                otp_not_before = datetime.now(timezone.utc) - timedelta(seconds=5)
+                _send_login_otp(session)
+                data = {
+                    "page": {"type": "email_otp_verification"},
+                    "_otp_already_sent": True,
+                    "_otp_not_before": otp_not_before,
+                }
+
+            code, code_verifier = _complete_login_flow(
+                session=session,
+                device_id=device_id,
+                email=email,
+                mail_config=mail_config,
+                workspace_id=workspace_id,
+                response_data=data,
+                code_verifier=code_verifier,
+                password=None,
+            )
+
+        logger.info(f"[{email}] Team login: exchanging code for tokens")
+        tokens = _exchange_login_tokens(
+            session,
+            code_verifier=code_verifier,
+            code=code,
+        )
+        logger.info(f"[{email}] Team login: token exchange succeeded")
+
+        return {
+            "email": email,
+            "password": "",
+            "access_token": str(tokens.get("access_token") or "").strip(),
+            "refresh_token": str(tokens.get("refresh_token") or "").strip(),
+            "id_token": str(tokens.get("id_token") or "").strip(),
+            "scope": "team" if workspace_id else "personal",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    finally:
+        session.close()
+
+
 def _handle_password_verification(
     session,
     device_id: str,
@@ -573,9 +706,54 @@ def _handle_password_verification(
     return _data_with_response_hints(resp)
 
 
-def _send_login_otp(session) -> None:
-    """Request a login OTP email for the current auth session."""
-    logger.info("Team login: requesting login OTP email")
+def _check_login_otp_send_response(resp, *, attempt: int) -> None:
+    data = _data_with_response_hints(resp)
+    page_type = _page_type_from_data(data)
+    logger.info(
+        f"Team login: OTP send HTTP {resp.status_code}, "
+        f"attempt={attempt}, page={page_type or '(none)'}, "
+        f"{_response_shape(resp)}"
+    )
+    if page_type in {"login_password", "password"}:
+        raise PasswordRequiredError(
+            "OTP-only login is unavailable; server returned password page"
+        )
+    if page_type == "error":
+        raise LoginError(
+            f"Login OTP send failed: auth error page, {_response_shape(resp)}"
+        )
+    error_data = data.get("error") if isinstance(data.get("error"), dict) else {}
+    if error_data:
+        detail = (
+            error_data.get("message")
+            or error_data.get("code")
+            or _response_detail(resp)
+        )
+        raise LoginError(f"Login OTP send failed: {detail}")
+
+
+def _navigate_email_verification(session) -> None:
+    logger.info("Team login: navigating to email verification page before retry")
+    resp, error = request_with_retry(
+        session,
+        "get",
+        f"{AUTH_BASE}/email-verification",
+        headers=navigate_headers(f"{AUTH_BASE}/log-in/password"),
+        allow_redirects=True,
+        verify=True,
+    )
+    if resp is None:
+        raise LoginError(
+            f"Email verification navigation failed: {error or 'no response'}"
+        )
+    data = _data_with_response_hints(resp)
+    logger.info(
+        f"Team login: email verification navigation HTTP {resp.status_code}, "
+        f"page={_page_type_from_data(data) or '(none)'}, {_response_shape(resp)}"
+    )
+
+
+def _send_login_otp_once(session, *, attempt: int) -> None:
     url = f"{AUTH_BASE}/api/accounts/email-otp/send"
     headers = navigate_headers(f"{AUTH_BASE}/email-verification")
 
@@ -588,7 +766,26 @@ def _send_login_otp(session) -> None:
             f"Login OTP send failed: HTTP "
             f"{getattr(resp, 'status_code', '?')}"
         )
-    logger.info(f"Team login: OTP send HTTP {resp.status_code}")
+    _check_login_otp_send_response(resp, attempt=attempt)
+
+
+def _send_login_otp(session) -> None:
+    """Request a login OTP email for the current auth session."""
+    logger.info("Team login: requesting login OTP email")
+    try:
+        _send_login_otp_once(session, attempt=1)
+    except (LoginError, PasswordRequiredError) as first_error:
+        logger.info(
+            "Team login: OTP send did not enter verification; "
+            "trying explicit email-verification navigation"
+        )
+        _navigate_email_verification(session)
+        try:
+            _send_login_otp_once(session, attempt=2)
+        except (LoginError, PasswordRequiredError) as second_error:
+            raise type(second_error)(
+                f"{second_error}; first attempt: {first_error}"
+            ) from second_error
 
 
 def _validate_login_otp(
@@ -750,12 +947,26 @@ def _complete_login_flow(
     workspace_id: str,
     response_data: dict[str, Any],
     code_verifier: str,
-    password: str,
+    password: str | None,
 ) -> tuple[str, str]:
     """Drive the auth session until it returns a platform callback code."""
     data = response_data
     active_code_verifier = code_verifier
-    otp_not_before: datetime | None = None
+    initial_otp_not_before = (
+        data.pop("_otp_not_before", None)
+        if isinstance(data, dict)
+        else None
+    )
+    otp_not_before: datetime | None = (
+        initial_otp_not_before
+        if isinstance(initial_otp_not_before, datetime)
+        else None
+    )
+    otp_already_sent = (
+        bool(data.pop("_otp_already_sent", False))
+        if isinstance(data, dict)
+        else False
+    )
 
     for _ in range(14):
         code = _extract_code_from_data(data)
@@ -771,6 +982,10 @@ def _complete_login_flow(
             break
 
         if page_type in {"login_password", "password"}:
+            if not password:
+                raise PasswordRequiredError(
+                    "OTP-only login reached password page"
+                )
             logger.info(f"[{email}] Team login: continuing password page")
             data = _handle_password_verification(
                 session=session,
@@ -782,6 +997,7 @@ def _complete_login_flow(
         if page_type == "email_otp_send":
             otp_not_before = datetime.now(timezone.utc) - timedelta(seconds=5)
             _send_login_otp(session)
+            otp_already_sent = True
             data = {
                 "page": {"type": "email_otp_verification"},
             }
@@ -793,6 +1009,7 @@ def _complete_login_flow(
         }:
             if otp_not_before is None:
                 otp_not_before = datetime.now(timezone.utc) - timedelta(seconds=5)
+            if not otp_already_sent:
                 _send_login_otp(session)
             data = _validate_login_otp(
                 session=session,
@@ -802,6 +1019,7 @@ def _complete_login_flow(
                 not_before=otp_not_before,
             )
             otp_not_before = None
+            otp_already_sent = False
             continue
 
         if page_type == "workspace":

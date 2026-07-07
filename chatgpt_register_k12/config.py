@@ -1,4 +1,4 @@
-"""Configuration loader for chatgpt-register-sub2api.
+"""Configuration loader for chatgpt-register-k12.
 
 Loads config.yaml, validates, and merges with CLI overrides.
 """
@@ -22,8 +22,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "enable": True,
                 "label": "Outlook Pool",
                 "mode": "auto",
-                "alias_enabled": False,
+                "alias_enabled": True,
                 "alias_limit_per_mailbox": 5,
+                "alias_custom_name_enabled": False,
+                "alias_custom_names": "",
                 "mailboxes": "",
             },
             {
@@ -34,12 +36,26 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "message_limit": 10,
                 "mailboxes": "",
             },
+            {
+                "type": "gmail_password",
+                "enable": False,
+                "label": "Gmail App Password Pool",
+                "imap_host": "imap.gmail.com",
+                "message_limit": 10,
+                "alias_enabled": True,
+                "alias_limit_per_mailbox": 5,
+                "alias_custom_name_enabled": False,
+                "alias_custom_names": "",
+                "mailboxes": "",
+            },
         ],
         "request_timeout": 30,
         "wait_timeout": 30,
         "wait_interval": 2,
-        "alias_enabled": False,
+        "alias_enabled": True,
         "alias_limit_per_mailbox": 5,
+        "alias_custom_name_enabled": False,
+        "alias_custom_names": "",
     },
     "proxy": {
         "url": "",
@@ -63,12 +79,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_retries": 3,
         "retry_backoff_ms": 5000,
     },
+    "workspace_state": {
+        "file": "data/workspace_account_state.json",
+    },
+    "existing_login": {
+        "mode": "email_otp",
+        "fallback_to_password": True,
+    },
+    "export": {
+        "format": "sub2api",
+        "output_file": "",
+    },
     "sub2api": {
         "enabled": True,
         "output_file": "sub2api_bundle.json",
         "require_team_tokens": "auto",
         "health_check": True,
-        "health_check_endpoint": "models",
+        "health_check_endpoint": "check",
         "health_check_timeout": 30,
         "health_check_retries": 2,
         "health_check_backoff_ms": 3000,
@@ -81,6 +108,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "logging": {
         "level": "INFO",
         "file": "",
+    },
+    "web": {
+        "host": "127.0.0.1",
+        "port": 8787,
     },
 }
 

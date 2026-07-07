@@ -21,20 +21,20 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
-from chatgpt_register_sub2api.register.headers import json_headers, navigate_headers
-from chatgpt_register_sub2api.register.mail_provider import (
+from chatgpt_register_k12.register.headers import json_headers, navigate_headers
+from chatgpt_register_k12.register.mail_provider import (
     create_mailbox,
     mark_mailbox_result,
     release_mailbox,
     wait_for_code,
 )
-from chatgpt_register_sub2api.register.session import (
+from chatgpt_register_k12.register.session import (
     create_register_session,
     is_cloudflare_challenge,
     request_with_retry,
 )
-from chatgpt_register_sub2api.utils.pkce import generate_pkce
-from chatgpt_register_sub2api.utils.sentinel import build_sentinel_token
+from chatgpt_register_k12.utils.pkce import generate_pkce
+from chatgpt_register_k12.utils.sentinel import build_sentinel_token
 
 # ── OpenAI Auth constants ───────────────────────────────────────────
 
@@ -48,6 +48,8 @@ PLATFORM_AUTH0_CLIENT = (
 )
 
 DEFAULT_TIMEOUT = 30
+REGISTRATION_PASSWORD_MIN_LENGTH = 12
+PROJECT_REGISTRATION_PASSWORD = "#A1234567890"
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -63,6 +65,24 @@ def _random_password(length: int = 16) -> str:
     )
     random.shuffle(value)
     return "".join(value)
+
+
+def normalize_registration_password(value: Any) -> str:
+    """Validate a registration password."""
+    password = str(value or "").strip()
+    if not password:
+        raise ValueError("registration password cannot be empty")
+    if len(password) < REGISTRATION_PASSWORD_MIN_LENGTH:
+        raise ValueError(
+            "registration password must be at least "
+            f"{REGISTRATION_PASSWORD_MIN_LENGTH} characters"
+        )
+    return password
+
+
+def project_registration_password() -> str:
+    """Return the built-in password used for all newly registered accounts."""
+    return normalize_registration_password(PROJECT_REGISTRATION_PASSWORD)
 
 
 def _random_name() -> tuple[str, str]:
@@ -161,6 +181,7 @@ class PlatformRegistrar:
         self.proxy = str(proxy or "").strip()
         self.flaresolverr_url = str(flaresolverr_url or "").strip()
         self.mail_config = mail_config or {}
+        self.account_password = project_registration_password()
         self.session = create_register_session(
             proxy=self.proxy,
             flaresolverr_url=self.flaresolverr_url,
@@ -198,7 +219,7 @@ class PlatformRegistrar:
                 f"HTTP {status}. Configure proxy.flaresolverr_url."
             )
 
-        from chatgpt_register_sub2api.register.session import (
+        from chatgpt_register_k12.register.session import (
             refresh_clearance_and_retry,
         )
         from urllib.parse import urlparse
@@ -606,7 +627,7 @@ class PlatformRegistrar:
             raise RegistrationError("Mail provider did not return an address")
 
         try:
-            password = _random_password()
+            password = self.account_password or _random_password()
             first_name, last_name = _random_name()
 
             # Step 4: Platform authorize (PKCE + screen_hint=signup)

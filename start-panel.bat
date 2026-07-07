@@ -11,7 +11,7 @@ echo Installing dependencies...
 ".venv\Scripts\python.exe" -m pip install -e .
 
 echo Starting local panel...
-start "" http://127.0.0.1:7860
-start "chatgpt-register-panel" /min ".venv\Scripts\python.exe" -m chatgpt_register_sub2api.web
+start "" http://127.0.0.1:8787
+start "chatgpt-register-k12-webui" /min ".venv\Scripts\python.exe" -m chatgpt_register_k12.cli web --host 127.0.0.1 --port 8787
 
 endlocal
