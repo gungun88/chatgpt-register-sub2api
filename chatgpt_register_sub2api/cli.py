@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import webbrowser
 from pathlib import Path
 
 from chatgpt_register_sub2api import __version__
@@ -318,6 +319,22 @@ def cmd_run(args) -> int:
     return 0 if summary["exported"] > 0 else 1
 
 
+def cmd_panel(args) -> int:
+    """Start the local web panel."""
+    import uvicorn
+
+    url = f"http://{args.host}:{args.port}"
+    if args.open:
+        webbrowser.open(url)
+    uvicorn.run(
+        "chatgpt_register_sub2api.web.app:app",
+        host=args.host,
+        port=args.port,
+        reload=False,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="chatgpt-register",
@@ -387,6 +404,13 @@ def main(argv: list[str] | None = None) -> None:
     p_run.add_argument("--accounts", default=None, help="Accounts store JSON file")
     p_run.add_argument("--threads", "-t", type=int, default=None, help="Workers per pipeline stage")
     p_run.set_defaults(func=cmd_run)
+
+    # 鈹€鈹€ panel 鈹€鈹€
+    p_panel = sub.add_parser("panel", help="Start local web panel")
+    p_panel.add_argument("--host", default="127.0.0.1", help="Listen host")
+    p_panel.add_argument("--port", type=int, default=7860, help="Listen port")
+    p_panel.add_argument("--open", action="store_true", help="Open browser")
+    p_panel.set_defaults(func=cmd_panel)
 
     args = parser.parse_args(argv)
     if not args.command:

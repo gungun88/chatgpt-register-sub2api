@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>注册导出面板</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <h1>注册导出面板</h1>
+          <p>本地运行 127.0.0.1，配置与结果保存在当前项目目录。</p>
+        </div>
+        <div class="status" id="jobStatus">空闲</div>
+      </header>
+
+      <main class="layout">
+        <section class="panel config-panel">
+          <div class="panel-head">
+            <h2>配置</h2>
+            <button id="saveBtn" class="secondary" type="button">保存配置</button>
+          </div>
+
+          <div class="grid two">
+            <label>
+              配置文件
+              <input id="configPath" value="config.yaml" autocomplete="off" />
+            </label>
+            <label>
+              代理
+              <input id="proxyUrl" placeholder="socks5://127.0.0.1:1080" autocomplete="off" />
+            </label>
+          </div>
+
+          <div class="tabs" role="tablist">
+            <button class="tab active" type="button" data-tab="outlook">Outlook</button>
+            <button class="tab" type="button" data-tab="gmail">Gmail</button>
+          </div>
+
+          <div class="tab-pane active" id="tab-outlook">
+            <div class="row between">
+              <label class="check"><input id="outlookEnabled" type="checkbox" /> 启用 Outlook</label>
+              <label class="check"><input id="aliasEnabled" type="checkbox" /> 启用 alias</label>
+              <label class="small-field">
+                alias 数量
+                <input id="aliasLimit" type="number" min="1" max="100" value="5" />
+              </label>
+            </div>
+            <label>
+              Outlook 邮箱池
+              <textarea id="mailboxes" spellcheck="false" placeholder="user@outlook.com----password----client_id----refresh_token"></textarea>
+            </label>
+          </div>
+
+          <div class="tab-pane" id="tab-gmail">
+            <label class="check"><input id="gmailEnabled" type="checkbox" /> 启用 Gmail OAuth</label>
+            <label>
+              Gmail 邮箱池
+              <textarea id="gmailMailboxes" spellcheck="false" placeholder="user@gmail.com----client_id----client_secret----refresh_token"></textarea>
+            </label>
+          </div>
+
+          <div class="grid two">
+            <label>
+              Workspace ID
+              <textarea id="workspaceIds" class="short" spellcheck="false" placeholder="每行一个 workspace uuid"></textarea>
+            </label>
+            <div class="stack">
+              <label>
+                加入方式
+                <select id="workspaceRoute">
+                  <option value="k12_request">k12_request</option>
+                  <option value="request">request</option>
+                  <option value="accept">accept</option>
+                </select>
+              </label>
+              <label class="check"><input id="workspaceEnabled" type="checkbox" /> 启用 workspace</label>
+              <label class="check"><input id="reLoginEnabled" type="checkbox" /> Team 重新登录</label>
+            </div>
+          </div>
+        </section>
+
+        <aside class="panel run-panel">
+          <h2>运行</h2>
+          <div class="grid two compact">
+            <label>
+              数量
+              <input id="count" type="number" min="1" max="500" value="1" />
+            </label>
+            <label>
+              线程
+              <input id="threads" type="number" min="1" max="100" value="1" />
+            </label>
+          </div>
+          <button id="runBtn" class="primary" type="button">开始运行</button>
+
+          <div class="summary" id="summary">
+            <div><span>注册</span><strong>-</strong></div>
+            <div><span>加入</span><strong>-</strong></div>
+            <div><span>刷新</span><strong>-</strong></div>
+            <div><span>导出</span><strong>-</strong></div>
+          </div>
+
+          <div class="export-box">
+            <h3>Sub2API 导出</h3>
+            <label>
+              导出文件名
+              <input id="sub2apiOutputFile" value="sub2api_bundle.json" autocomplete="off" />
+            </label>
+            <label class="check"><input id="healthCheck" type="checkbox" /> 导出前健康检查</label>
+            <p>完整运行结束后会自动生成 Sub2API 格式 JSON，不需要再点单独的导出按钮。</p>
+            <div id="currentOutput" class="current-output"></div>
+          </div>
+
+          <h3>最近结果</h3>
+          <div id="runs" class="runs"></div>
+        </aside>
+      </main>
+
+      <section class="panel log-panel">
+        <div class="panel-head">
+          <h2>实时日志</h2>
+          <button id="refreshRunsBtn" class="secondary" type="button">刷新结果</button>
+        </div>
+        <pre id="logs"></pre>
+      </section>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
